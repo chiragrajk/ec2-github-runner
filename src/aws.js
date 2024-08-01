@@ -4,6 +4,12 @@ const config = require('./config');
 
 // User data scripts are run as the root user
 function buildUserDataScript(githubRegistrationToken, label) {
+  const ephemeral = config.input.ephemeral ? '--ephemeral' : '';
+  const ephemeralCommands = config.input.ephemeral ? [
+    'sleep 5',
+    'shutdown -h now'
+  ] : [];
+
   if (config.input.runnerHomeDir) {
     // If runner home directory is specified, we expect the actions-runner software (and dependencies)
     // to be pre-installed in the AMI, so we simply cd into that directory and then start the runner
@@ -13,8 +19,9 @@ function buildUserDataScript(githubRegistrationToken, label) {
       `echo "${config.input.preRunnerScript}" > pre-runner-script.sh`,
       'source pre-runner-script.sh',
       'export RUNNER_ALLOW_RUNASROOT=1',
-      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label}`,
+      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label} ${ephemeral}`,
       './run.sh',
+      ...ephemeralCommands,
     ];
   } else {
     return [
@@ -26,8 +33,9 @@ function buildUserDataScript(githubRegistrationToken, label) {
       'curl -O -L https://github.com/actions/runner/releases/download/v2.313.0/actions-runner-linux-${RUNNER_ARCH}-2.313.0.tar.gz',
       'tar xzf ./actions-runner-linux-${RUNNER_ARCH}-2.313.0.tar.gz',
       'export RUNNER_ALLOW_RUNASROOT=1',
-      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label}`,
+      `./config.sh --url https://github.com/${config.githubContext.owner}/${config.githubContext.repo} --token ${githubRegistrationToken} --labels ${label} ${ephemeral}`,
       './run.sh',
+      ...ephemeralCommands,
     ];
   }
 }
@@ -37,16 +45,28 @@ async function startEc2Instance(label, githubRegistrationToken) {
 
   const userData = buildUserDataScript(githubRegistrationToken, label);
 
+  const blockDeviceMappings = config.input.ec2VolumeSize ? [
+    {
+      DeviceName: "/dev/sda1",
+      Ebs: {
+        DeleteOnTermination: true,
+        VolumeSize: parseInt(config.input.ec2VolumeSize),
+      }
+    }
+  ] : undefined;
+
   const params = {
     ImageId: config.input.ec2ImageId,
     InstanceType: config.input.ec2InstanceType,
     MinCount: 1,
     MaxCount: 1,
+    BlockDeviceMappings: blockDeviceMappings,
     UserData: Buffer.from(userData.join('\n')).toString('base64'),
     SubnetId: config.input.subnetId,
     SecurityGroupIds: [config.input.securityGroupId],
     IamInstanceProfile: { Name: config.input.iamRoleName },
     TagSpecifications: config.tagSpecifications,
+    InstanceInitiatedShutdownBehavior: config.input.ephemeral ? 'terminate' : 'stop',
   };
 
   try {
